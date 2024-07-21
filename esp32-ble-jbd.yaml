@@ -63,6 +63,9 @@ debug:
 web_server:
   local: true
   version: 3
+  # auth:
+  #   username: !secret web_server_username
+  #   password: !secret web_server_password
 
 # deep_sleep:
 #   id: deep_sleep0
@@ -174,9 +177,9 @@ sensor:
     state_of_charge:
       name: "${name} SOC"
   
-  - platform: wifi_signal
-    name: "${name} wifi Signal"
-    update_interval: 120s
+  # - platform: wifi_signal
+  #   name: "${name} wifi Signal"
+  #   update_interval: 120s
 
   - platform: uptime
     name: "${name} ESP Uptime"
@@ -231,18 +234,20 @@ number:
     min_value: 3.36
     max_value: 3.56
     mode: slider
-    initial_value: 3.5
+    initial_value: 3.48
     unit_of_measurement: V
     icon: mdi:battery-charging
     optimistic: true
   - platform: template
-    name: "${name} Cutoff Const: 3.375 + Const x C'rate"
-    id: cutoff_const
+    name: "${name} Cutoff current"
+    id: cutoff_amps
     step: 1
     min_value: 1
     max_value: 10
     mode: slider
-    initial_value: 2
+    initial_value: 5
+    unit_of_measurement: A
+    icon: mdi:current-dc
     optimistic: true
   - platform: template
     name: "${name} Rebulk voltage"
@@ -261,16 +266,15 @@ interval:
     startup_delay: 4s
     then:
       lambda: |-
-        // Charge termination cutoff
-        float cutoff_v = 3.375 + id(cutoff_const).state * (id(current).state / 100);
+        // Charge termination/cutoff
 
-        if ((id(cutoff_sw).state) & (id(charging).state) & (id(current).state > 0) & (id(max_cell_v).state > cutoff_v)) {
+        if ((id(cutoff_sw).state) & (id(charging).state) & (id(current).state < id(cutoff_amps).state) & (id(max_cell_v).state > 3.45)) {
           id(charging).turn_off();
           id(charging_status).publish_state("Charging Power/Amp Cutoff");
         }
 
-        // Max cell voltage cutoff is a safety/protection feature and always enabled
+        // Max cell voltage cutoff is a safety/protection feature and always enabled just like in BMS
         if ((id(charging).state) & (id(max_cell_v).state > id(safety_v).state)) {
           id(charging).turn_off();
-          id(charging_status).publish_state("Max. Voltage Cutoff");
+          id(charging_status).publish_state("Max. Voltage safety");
         }
