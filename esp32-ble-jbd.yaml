@@ -3,7 +3,7 @@
 # https://github.com/syssi/esphome-jbd-bms/blob/main/yaml-snippets/esp32-ble-deepsleep-limit-charging-automation.yaml
 
 # An ESPHome sketch for safe charge terminating JBD BMS batteries for use with DUMB charging solutions.
-# Copyright (C) 2024  shvmm
+# 22 July 2024 shvmm
 
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License v2
@@ -16,20 +16,20 @@
 
 substitutions:
   name: shvm-jbd
-  device_description: "Xiaoxiang BMS Charge Termination (JBD-BMS) via BLE"
+  device_description: "Xiaoxiang BMS Charge Cutoff (JBD-BMS) using BLE"
   external_components_source: github://syssi/esphome-jbd-bms@main
   mac_address: a5:c2:37:05:6f:19
 
 esphome:
   name: ${name}
   comment: ${device_description}
-  min_version: 2024.6.0
+  min_version: 2024.7.1
   project:
     name: "syssi.esphome-jbd-bms"
     version: 1.5.0
-  on_boot:
-    then:
-      - switch.turn_on: cutoff_sw
+  # on_boot:
+  #   then:
+  #     - switch.turn_on: cutoff_sw
 esp32:
   board: esp32doit-devkit-v1
   framework:
@@ -42,7 +42,7 @@ external_components:
 # api:
 #   reboot_timeout: 0s
 
-wifi:  
+wifi:
   # ssid: !secret wifi_ssid
   # password: !secret wifi_password
   # domain: !secret domain
@@ -54,8 +54,8 @@ wifi:
 #   platform: esphome
 
 logger:
-  level: INFO
-  # USE DEBUG for Home Assistant
+  level: WARN
+  # USE DEBUG while using Home Assistant
 
 debug:
   update_interval: 20s
@@ -63,6 +63,7 @@ debug:
 web_server:
   local: true
   version: 3
+  js_url: "https://deploy-preview-115--esphome-webserver.netlify.app/v3/www.js"
   # auth:
   #   username: !secret web_server_username
   #   password: !secret web_server_password
@@ -77,16 +78,61 @@ esp32_ble_tracker:
 ble_client:
   - id: client0
     mac_address: ${mac_address}
+    on_connect:
+      then:
+        - light.turn_on:
+            id: blue_led
+            brightness: 100%
+            effect: None
+        - lambda: |-            
+            id(chg_status).publish_state("JBD BMS Connected");
+            ESP_LOGW("ESP LED", "BLE Connect");
+    on_disconnect:
+      then:
+        - light.turn_off:
+            id: blue_led
+        # - light.turn_on:
+        #     id: blue_led
+        #     effect: strobe
+        - lambda: |-
+            id(chg_status).publish_state("BMS Disconnected");
+            ESP_LOGW("ESP LED", "BLE Disconnect");
 
 jbd_bms_ble:
   - id: bms0
     ble_client_id: client0
     update_interval: 2s
 
-light:
-  - platform: status_led
-    name: "State LED"
+output:
+  - platform: ledc
     pin: 2
+    id: pwm_led
+
+light:
+  - platform: monochromatic
+    output: pwm_led
+    id: blue_led
+    effects:
+      - strobe:
+          name: "Strobe"
+      - pulse:
+          name: "Slow Pulse"
+          transition_length: 500ms
+          update_interval: 500ms
+          min_brightness: 20%
+          max_brightness: 100%
+      - pulse:
+          name: "Extraslow Pulse"
+          transition_length: 1000ms
+          update_interval: 1000ms
+          min_brightness: 50%
+          max_brightness: 100%
+      - pulse:
+          name: "Fast Pulse"
+          transition_length: 100ms
+          update_interval: 100ms
+          min_brightness: 0%
+          max_brightness: 100%
 
 binary_sensor:
   - platform: jbd_bms_ble
@@ -102,14 +148,21 @@ sensor:
     jbd_bms_ble_id: bms0
     battery_strings:
       name: "${name} battery strings"
-    current:
-      id: current
-      name: "${name} Current"
     power:      
       name: "${name} Power"      
     charging_power:
       name: "${name} charging power"
       id: chg_power
+      on_value:
+        lambda: |-
+          if ((x > 0) && (id(charging).state)) {
+            id(chg_status).publish_state("Bulk");
+            id(blue_led).turn_on().set_effect("Slow Pulse").perform();
+          }
+          else if (id(charging).state) {
+            id(chg_status).publish_state("Idle/Discharging");
+            id(blue_led).turn_on().set_effect("Extraslow Pulse").perform();
+          }
     # discharging_power:
     #   name: "${name} discharging power"
     nominal_capacity:
@@ -134,13 +187,13 @@ sensor:
       name: "${name} Max cell voltage"
       on_value:
         then:
-        # Enable ChargeMOS again if max_cell_v falls below some value.
+          # Enable ChargeMOS again if max_cell_v falls below some value.
           lambda: |-
             if (!(id(charging).state) && (id(max_cell_v).state < id(rebulk_v).state)) {
-                id(charging).turn_on();
-                id(charging_status).publish_state("Bulk");
+              id(charging).turn_on();
+              id(chg_status).publish_state("Bulk");
+              ESP_LOGW("BlueLED", "ChargeMOS ON again");
             }
-
         # Suspend deep sleep at the end of a charge cycle to stop on point (optional!)
         # - if:
         #     condition:
@@ -151,6 +204,9 @@ sensor:
         #             above: 3.375
         #     then:
         #       - deep_sleep.prevent: deep_sleep0
+    current:
+      id: current
+      name: "${name} Current"
     min_voltage_cell:
       name: "${name} min voltage cell"
     max_voltage_cell:
@@ -201,9 +257,10 @@ text_sensor:
       name: "${name} operation status"
     device_model:
       name: "${name} device model"
+  
   - platform: template
-    name: "${name} Charger Status"
-    id: charging_status
+    name: "${name} ESP Chg Status"
+    id: chg_status
 
 switch:
   - platform: ble_client
@@ -218,10 +275,10 @@ switch:
     discharging:
       name: "${name} discharging"
   
-  - platform: template
-    name: "${name} Cutoff switch"
-    id: cutoff_sw
-    optimistic: true
+  # - platform: template
+  #   name: "${name} Cutoff switch"
+  #   id: cutoff_sw
+  #   optimistic: true
 
 number:
   # +-------------+
@@ -256,7 +313,7 @@ number:
     min_value: 3.28
     max_value: 3.36
     mode: slider
-    initial_value: 3.32
+    initial_value: 3.33
     unit_of_measurement: V
     icon: mdi:battery-charging
     optimistic: true
@@ -265,16 +322,24 @@ interval:
   - interval: 2s
     startup_delay: 4s
     then:
-      lambda: |-
-        // Charge termination/cutoff
+      
+      - lambda: |-
+          // Max cell voltage cutoff is a safety/protection feature and always enabled just like in BMS
 
-        if ((id(cutoff_sw).state) & (id(charging).state) & (id(current).state < id(cutoff_amps).state) & (id(max_cell_v).state > 3.45)) {
-          id(charging).turn_off();
-          id(charging_status).publish_state("Charging Power/Amp Cutoff");
-        }
+          if (id(charging).state && (id(max_cell_v).state > id(safety_v).state)) {
+            id(charging).turn_off();
+            id(chg_status).publish_state("High Voltage Cutoff");
+            id(blue_led).turn_on().set_brightness(1.0).set_effect("Fast Pulse").perform();
+            
+            ESP_LOGW("BlueLED", "Fast Pulse HV Cutoff");
+          }
 
-        // Max cell voltage cutoff is a safety/protection feature and always enabled just like in BMS
-        if ((id(charging).state) & (id(max_cell_v).state > id(safety_v).state)) {
-          id(charging).turn_off();
-          id(charging_status).publish_state("Max. Voltage safety");
-        }
+          // Charge termination/cutoff
+
+          if (id(charging).state & (id(current).state < id(cutoff_amps).state) & (id(max_cell_v).state > 3.45)) {
+            id(charging).turn_off();
+            id(chg_status).publish_state("Charging Power/Amp Cutoff");            
+            id(blue_led).turn_on().set_brightness(1.0).set_effect("Strobe").perform();
+            
+            ESP_LOGW("BlueLED", "Strobe Power/Amp Cutoff");
+          }
